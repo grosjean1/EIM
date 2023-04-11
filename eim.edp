@@ -1,0 +1,238 @@
+// methode eim
+// exemple avec u(x1,x2;mu1,mu2)=1/sqrt((x1-mu1)^2+(x2-mu2)^2)
+// avec le carre et mu in [-1,-0.01]^2
+// plot (1-cos(pi*x))/2
+// set xrange [0:1]
+// plot tanh(x)-> dans gnuplot
+
+
+load "lapack"
+//***************************** Init ******************************************//
+int neV=10;//nombre de bases qu'on veut
+int ns=10;//nombre parametres = ns*ns
+
+int n=20;//taille mesh
+
+mesh Th=square(n,n);
+
+fespace Ph(Th,P0);
+Ph h = hTriangle;
+cout << "size of mesh 1 = " << h[].max << endl;
+
+
+real mu1,mu2;
+//Fonction a approcher
+func g=1/sqrt((x-mu1)^2+(y-mu2));
+mu1=-0.5;mu2=-0.05;
+Ph uvef=g;
+
+cout<<"VRAI "<<uvef(0.5,0.5)<<endl;
+
+NewMacro FuncGM1(g,mu1,mu2,mu11,mu22,ns,grilleg,grilleginfty){
+	for(int i=0;i<ns;i++){
+		for(int j=0;j<ns;j++){
+			mu1=mu11(i);
+			mu2=mu22(j);
+			Ph u=g;
+			grilleg(:,i*ns+j)=u[];
+			grilleginfty(i*ns+j)=u[].linfty;
+		}
+	}  
+}
+EndMacro
+
+
+//repartition parametres en grille
+NewMacro SETPARAM(mubegin,muend,mu11,mu22,ns)
+{
+	real val=muend-(mubegin);
+	for(int i=0;i<ns;i++){
+      	      mu11(i)=mubegin+i*val/ns;
+      }
+      mu22=mu11;
+}
+EndMacro
+
+NewMacro trouvePhiM(ii,grilleg,grilleginfty,IndexDejaUtil,M,phi){
+	 sort(grilleginfty,ii);
+	 cout<<"indice de mu1,mu2 tel que mu1,mu2 maximise g -l(M-1) en norme inf: "<<ii(ii.n-1)<<endl;
+	 IndexDejaUtil(M)=ii(ii.n-1);
+	 cout<<"ensuite phi_M = g(mu) "<<endl;
+	phi[M][]=grilleg(:,ii(ii.n-1));
+}
+EndMacro
+
+NewMacro trouvePtMagicM(tmp,Th,vec,iit,imagic,jmagic,xmagic,ymagic,M)
+{
+	cout<<"pb la"<<endl;
+	for (int i=0;i<Th.nt;i++){
+	    for (int j=0; j <3; j++){
+    	    	vec(i*3+j)=abs(tmp[][Ph(i,j)]);
+    	     }
+	 }
+
+	 //on recupere le maximum sur le domaine
+	 sort(vec,iit);
+	 cout<<" on trouve ii2t= "<< iit(vec.n-1)<<endl;
+	 imagic=iit(vec.n-1)/3; jmagic=iit(vec.n-1)-3*imagic;
+	 cout<<"quoi "<<endl;
+	 cout<<" xM "<<Th[imagic][jmagic].x << " yM "<< Th[imagic][jmagic].y<< " max  "<<abs(tmp[][Ph(imagic,jmagic)])<<endl;
+	 tindex(M,0)=imagic;tindex(M,1)=jmagic;
+	 t(M,0)=xmagic; t(M,1)=ymagic;  //pt magique M
+}
+EndMacro
+
+real[int] mu11(ns); //parametres mu1(tableau)
+real[int] mu22(ns); //mu2 (tableau)
+SETPARAM(-1,-0.01,mu11,mu22,ns)
+real[int,int] t(ns,2); //pts magics x,y
+real[int,int] tindex(ns,2); //pts magics x,y: leurs indices Th[tindex(0,0)][tindex(0,1)].x (idem pour retrouver y)
+Ph[int] phi(neV); //les g trouver par les max
+Ph[int] qi(neV); //les fonctions de base générées à la fin de l'algo
+Ph tmp,tmp2;
+int[int] IndexDejaUtil(ns);IndexDejaUtil=-1; //pour les mu...
+real[int,int] eps(ns*ns,neV);
+real[int,int] epschap(ns*ns,neV);
+int imagic,jmagic;
+real xmagic,ymagic;
+
+
+//************************************* Resolution pour M=1 (ds le code -> M=0) *******************************//
+real[int,int] grilleg(Ph.ndof,ns*ns); //vecteur des g(mu1,mu2) g(mu11,mu2i,...,mu12,mu2i...)
+real[int,int] grilleg2(Ph.ndof,ns*ns); //vecteur des g(mu1,mu2)-l(M-1) où l(M-1) est forme linéaire
+real[int] grilleginfty(ns*ns); //vecteur des norm(g-l(M-1),inf;mu1,mu2) pour chaque mu 
+
+FuncGM1(g,mu1,mu2,mu11,mu22,ns,grilleg,grilleginfty)
+
+//tri pour recuperer le max de grilleginfty
+int[int] ii(0:grilleginfty.n-1);
+trouvePhiM(ii,grilleg,grilleginfty,IndexDejaUtil,0,phi)
+
+
+real[int] vec(Th.nt*3); //abs(phi0) : on trouve le pt magic en maximisant sur x abs(phi0)
+int[int] iit(0:vec.n-1);
+trouvePtMagicM(phi[0],Th,vec,iit,imagic,jmagic,xmagic,ymagic,0)
+
+qi[0][]=phi[0][]/phi[0][][Ph(imagic,jmagic)];//premiere fonction de la base!                            q0! 
+
+
+//M=2 et ++
+
+for(int M=1;M<neV;M++){
+	cout<<"M "<<M<<endl;
+	real[int,int] Qmat(M,M); //matrice triang inf
+	real[int] alpha(M);//coeff à trouver
+	real[int] G(M);//fct g : Q*alpha=G
+
+	for(int k1=0;k1<M;k1++){
+		for(int k2=0;k2<M;k2++){
+			Qmat(k1,k2) = ( k2<=k1 ? qi[k2][][Ph(tindex(k1,0),tindex(k1,1))] : 0 ); //q_col(t_ligne) 
+		}
+	}
+
+	real[int,int] Qmatinv(M,M);
+	Qmatinv=Qmat^-1;
+
+	cout<<" Q "<<Qmat<<endl;
+
+	for(int i=0;i<ns;i++){ //boucle sur les params
+		for(int j=0;j<ns;j++){
+			mu1=mu11(i);
+			mu2=mu22(j);
+			tmp[]=grilleg(:,i*ns+j);
+			for(int k1=0;k1<M;k1++){//on remplit G 
+				G(k1)=tmp[][Ph(tindex(k1,0),tindex(k1,1))];
+			}
+			alpha=Qmatinv*G;
+			for(int k1=0;k1<M;k1++){
+				tmp2[]=alpha(k1)*qi[k1][];
+				tmp[]-=tmp2[];
+			}
+			grilleg2(:,i*ns+j)=tmp[];
+			grilleginfty(i*ns+j)=tmp[].linfty;
+			eps(i*ns+j,M-1)=tmp[].linfty;
+			for(int k3=0;k3<M;k3++){//là il faut gérer tous les indices precedents...
+				if(IndexDejaUtil(k3)==i*ns+j){
+					grilleginfty(i*ns+j)=-1;//on ne veut pas recuperer mu1,mu2
+				}
+			}
+		}
+	}
+
+	//on recupere mu_M
+	int[int] ii2(0:grilleginfty.n-1);
+	trouvePhiM(ii2,grilleg,grilleginfty,IndexDejaUtil,M,phi)
+
+	//on trouve le pt magic en maximisant sur x abs(phiM-l(M-1))
+	
+	tmp[]=grilleg2(:,ii2(ii2.n-1));
+
+	int[int] iit(0:vec.n-1);
+	trouvePtMagicM(tmp,Th,vec,iit,imagic,jmagic,xmagic,ymagic,M)
+
+	 Ph[int] tmpp(ns*ns);
+	 for(int i=0;i<ns*ns;i++){
+	  	 tmpp[i][]=grilleg2(:,i);
+	}
+	for(int i=0;i<ns*ns;i++){
+	 epschap(i,M-1)=abs(tmpp[i][][Ph(imagic,jmagic)]);
+	 }
+	 qi[M][]=tmp[]/(tmp[][Ph(imagic,jmagic)]);  //base M
+	
+}
+
+
+
+///**ONLINE***///
+mu1=-0.5;mu2=-0.5;
+Ph u=g;
+
+real xseek=0.5;real yseek=0.5;
+real sol=0;
+real[int,int] Qmat(neV,neV);
+real[int] G(neV);
+
+real[int] alpha(neV);//coeff à trouver
+for(int k1=0;k1<neV;k1++){
+	for(int k2=0;k2<neV;k2++){
+		//Qmat(k1,k2) = qi[k2][][Ph(tindex(k1,0),tindex(k1,1))]; 
+		Qmat(k1,k2) = ( k2<=k1 ? qi[k2][][Ph(tindex(k1,0),tindex(k1,1))] : 0 ); //q_col(t_ligne) 
+	}
+}
+cout<<"Q FIN"<<Qmat<<endl;
+real[int,int] Qmatinv(neV,neV);
+Qmatinv=Qmat^-1;
+tmp=g;
+for(int k1=0;k1<neV;k1++){//on remplit G : Q peut être rempli en dehors de la boucle sur les param!
+	G(k1)=tmp[][Ph(tindex(k1,0),tindex(k1,1))];
+}
+alpha=Qmatinv*G; //alpha correspond au mu souhaite
+
+
+for(int i=0;i<neV;i++){
+
+		sol+=alpha(i)*qi[i](xseek,yseek);
+		//sol+=alpha(i)*qi[i][][Ph(tindex(0,0),tindex(0,1))];
+}
+
+//real test=abs(sol-u[][Ph(tindex(0,0),tindex(0,1))]);
+real test=abs(sol-u(xseek,yseek));
+//cout<< "solution trouvee "<<sol<<" " <<u[][Ph(tindex(0,0),tindex(0,1))]<<" "<<test<<endl;
+cout<< "Approximation: "<<sol<<" true solution: "<<u(xseek,yseek)<<" error " <<test<<endl;
+
+
+for(int i=0;i<neV-1;i++){
+int k=IndexDejaUtil(i+1);
+	for(int j=0;j<ns*ns;j++){
+		//cout<<epschap(k,i)<<endl;
+		//cout<<eps(k,i)<<endl;
+		real test2=epschap(j,i)/eps(j,i);
+		if(test2>1){
+			cout<<i <<" "<<test2<<endl;
+		}
+	}
+}
+
+
+
+	
